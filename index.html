@@ -250,10 +250,19 @@
     <form id="tradeForm" novalidate>
       <input type="hidden" id="tradeId">
       <div class="form-grid">
-        <label class="field">
-          <span>Date <b>*</b></span>
+        <div class="field">
+          <label class="field-label" for="fDate">Date <b>*</b></label>
           <input type="date" id="fDate" required>
-        </label>
+          <div class="date-actions">
+            <button type="button" class="btn ghost small" id="nextDayBtn" title="Move the trade date forward one day">
+              Next day <span aria-hidden="true">→</span>
+            </button>
+            <label class="check-inline" title="After saving, move the date forward one day">
+              <input type="checkbox" id="autoNextDay" checked>
+              Auto next day
+            </label>
+          </div>
+        </div>
         <label class="field">
           <span>Outcome</span>
           <select id="fOutcome">
@@ -265,7 +274,7 @@
           </select>
         </label>
         <label class="field">
-          <span>Realized RR</span>
+          <span>Realized RR <em class="field-hint" id="fRRHint"></em></span>
           <input type="number" id="fRR" step="0.01" placeholder="e.g. 3 or -1">
         </label>
         <label class="field">

@@ -6,6 +6,7 @@
   // ---------------------------------------------------------------- constants
   const STORAGE_KEY = 'rledger.local.journal.v1';
   const IMG_DB = 'rledger.local.images';
+  const AUTO_NEXT_KEY = 'rledger.pref.autonextday.v1';
   const IMG_STORE = 'images';
   const LOG_PAGE_SIZE = 25;
   const GALLERY_PAGE_SIZE = 12;
@@ -82,6 +83,12 @@
   function dateObj(iso) {
     const [y, m, d] = String(iso).split('-').map(Number);
     return new Date(y, m - 1, d, 12);
+  }
+
+  function addDaysISO(iso, days) {
+    const d = dateObj(iso);
+    d.setDate(d.getDate() + days);
+    return isoFromParts(d.getFullYear(), d.getMonth() + 1, d.getDate());
   }
 
   function dateNice(iso) {
@@ -969,6 +976,9 @@
   let currentShot = '';
   let pendingFile = null;
   let previewToken = 0;
+  let rrAutoStatus = null;
+  let manualRR = '';
+  let saving = false;
 
   function setOutcomeSelect(status) {
     Array.from(els.fOutcome.querySelectorAll('option[data-custom]')).forEach((o) => o.remove());
@@ -985,6 +995,26 @@
 
   function updateDayPreview() {
     els.fDay.textContent = els.fDate.value ? `${weekday(els.fDate.value)} · auto` : 'Select a date';
+  }
+
+  function applyOutcomeRules({ capture = true } = {}) {
+    const status = normalizeStatus(els.fOutcome.value);
+    if (status === 'SL' || status === 'BE') {
+      if (capture && !rrAutoStatus) manualRR = els.fRR.value;
+      els.fRR.value = status === 'SL' ? '-1' : '0';
+      els.fRR.readOnly = true;
+      els.fRR.classList.add('locked');
+      els.fRRHint.textContent = status === 'SL' ? 'auto · -1R' : 'auto · 0R';
+      rrAutoStatus = status;
+    } else {
+      if (rrAutoStatus) {
+        els.fRR.value = manualRR;
+        rrAutoStatus = null;
+      }
+      els.fRR.readOnly = false;
+      els.fRR.classList.remove('locked');
+      els.fRRHint.textContent = '';
+    }
   }
 
   function showShotPreview(url, label) {
@@ -1029,6 +1059,10 @@
     els.fDate.value = trade ? trade.date : (options.date || todayISO());
     setOutcomeSelect(trade ? trade.status : '');
     els.fRR.value = trade && numeric(trade.rr) ? trade.rr : '';
+    const initialStatus = normalizeStatus(els.fOutcome.value);
+    manualRR = (initialStatus === 'SL' || initialStatus === 'BE') ? '' : els.fRR.value;
+    rrAutoStatus = null;
+    applyOutcomeRules({ capture: false });
     els.fMaxRR.value = trade && numeric(trade.maxRR) ? trade.maxRR : '';
     els.fTime.value = trade && trade.time ? trade.time : '';
     els.fNote.value = trade ? trade.note || '' : '';
@@ -1055,23 +1089,64 @@
     els.fShotFile.value = '';
   }
 
+  function resetTradeFormForNext(savedDate) {
+    const nextDate = els.autoNextDay.checked ? addDaysISO(savedDate, 1) : savedDate;
+    editingId = null;
+    currentShot = '';
+    pendingFile = null;
+    if (pendingPreviewUrl) { URL.revokeObjectURL(pendingPreviewUrl); pendingPreviewUrl = null; }
+    els.tradeId.value = '';
+    els.fDate.value = nextDate;
+    setOutcomeSelect('');
+    els.fRR.value = '';
+    manualRR = '';
+    rrAutoStatus = null;
+    applyOutcomeRules({ capture: false });
+    els.fMaxRR.value = '';
+    els.fTime.value = '';
+    els.fNote.value = '';
+    els.fShotUrl.value = '';
+    els.fShotFile.value = '';
+    els.fShotName.textContent = 'No file chosen';
+    els.fShotRemove.classList.add('hidden');
+    els.fShotPreview.hidden = true;
+    els.tradeModalTitle.textContent = 'Add trade';
+    els.tradeModalEyebrow.textContent = 'Journal entry';
+    els.tradeDelete.classList.add('hidden');
+    els.tradeSave.textContent = 'Save trade';
+    updateDayPreview();
+    refreshShotPreview();
+    els.tradeModal.scrollTop = 0;
+    setTimeout(() => {
+      if (els.autoNextDay.checked) els.fOutcome.focus();
+      else els.fDate.focus();
+    }, 30);
+    return nextDate;
+  }
+
   function nextTradeId() {
     return state.trades.reduce((max, t) => Math.max(max, Number(t.id) || 0), 0) + 1;
   }
 
   async function saveTrade(event) {
     event.preventDefault();
+    if (saving) return;
     const date = parseDateValue(els.fDate.value);
     if (!date) { toast('Choose a valid date for the trade.', true); els.fDate.focus(); return; }
 
     const existing = editingId !== null ? state.trades.find((t) => t.id === editingId) : null;
     let shot = currentShot;
     if (pendingFile) {
+      saving = true;
+      els.tradeSave.disabled = true;
       try {
         shot = await storeUploadedImage(pendingFile);
       } catch (err) {
         toast(err.message || 'Could not save the image.', true);
         return;
+      } finally {
+        saving = false;
+        els.tradeSave.disabled = false;
       }
     } else {
       const rawUrl = els.fShotUrl.value.trim();
@@ -1084,12 +1159,13 @@
       }
     }
 
+    const status = normalizeStatus(els.fOutcome.value);
     const trade = {
       id: existing ? existing.id : nextTradeId(),
       date,
       day: weekday(date),
-      status: normalizeStatus(els.fOutcome.value),
-      rr: numOrNull(els.fRR.value),
+      status,
+      rr: status === 'SL' ? -1 : status === 'BE' ? 0 : numOrNull(els.fRR.value),
       maxRR: numOrNull(els.fMaxRR.value),
       time: els.fTime.value || null,
       screenshot: shot,
@@ -1114,8 +1190,16 @@
     state.logPage = 0;
     state.galleryPage = 0;
     render();
-    closeTradeModal();
-    toast(existing ? 'Trade updated.' : 'Trade added.');
+    if (els.tradeModal.hidden) {
+      toast(existing ? 'Trade updated.' : 'Trade added.');
+      return;
+    }
+    const nextDate = resetTradeFormForNext(date);
+    if (els.autoNextDay.checked) {
+      toast(`${existing ? 'Trade updated' : 'Trade added'}. Next entry: ${dateNice(nextDate)}.`);
+    } else {
+      toast(`${existing ? 'Trade updated' : 'Trade added'}. Ready for another entry.`);
+    }
   }
 
   function deleteTradeById(id) {
@@ -1512,6 +1596,17 @@
     document.querySelectorAll('[data-close-trade]').forEach((btn) => btn.addEventListener('click', closeTradeModal));
     els.tradeModal.addEventListener('mousedown', (e) => { if (e.target === els.tradeModal) closeTradeModal(); });
     els.fDate.addEventListener('change', updateDayPreview);
+    els.nextDayBtn.addEventListener('click', () => {
+      const current = parseDateValue(els.fDate.value);
+      els.fDate.value = current ? addDaysISO(current, 1) : todayISO();
+      updateDayPreview();
+      els.fDate.focus();
+    });
+    els.autoNextDay.addEventListener('change', () => {
+      try { localStorage.setItem(AUTO_NEXT_KEY, els.autoNextDay.checked ? '1' : '0'); } catch (err) {}
+    });
+    els.fOutcome.addEventListener('change', () => applyOutcomeRules());
+    els.fRR.addEventListener('input', () => { if (!rrAutoStatus) manualRR = els.fRR.value; });
     els.fShotPick.addEventListener('click', () => els.fShotFile.click());
     els.fShotFile.addEventListener('change', () => {
       const file = els.fShotFile.files[0] || null;
@@ -1646,11 +1741,16 @@
       'logRows', 'logEmpty', 'logPager', 'galleryCount', 'galleryGrid', 'galleryEmpty', 'galleryPager',
       'calMonthLabel', 'calPrev', 'calMonth', 'calNext', 'calGrid', 'calEmpty', 'calStats', 'tradeModal',
       'tradeModalEyebrow', 'tradeModalTitle', 'tradeForm', 'tradeId', 'fDate', 'fOutcome', 'fRR', 'fMaxRR',
-      'fTime', 'fDay', 'fShotUrl', 'fShotFile', 'fShotPick', 'fShotName', 'fShotRemove', 'fShotPreview',
+      'fTime', 'fDay', 'nextDayBtn', 'autoNextDay', 'fRRHint', 'fShotUrl', 'fShotFile', 'fShotPick', 'fShotName', 'fShotRemove', 'fShotPreview',
       'fShotPreviewLabel', 'fNote', 'tradeDelete', 'tradeSave', 'dataModal', 'exportCsv', 'backupJson',
       'restoreJson', 'downloadTemplate', 'lightbox', 'lbTitle', 'lbSub', 'lbSource', 'lbFull', 'lbClose',
       'lbPrev', 'lbImg', 'lbFallback', 'lbNext', 'fileInput', 'restoreInput', 'toast', 'sideCount'
     ].forEach((id) => { els[id] = $(id); });
+
+    try {
+      const autoPref = localStorage.getItem(AUTO_NEXT_KEY);
+      if (autoPref !== null) els.autoNextDay.checked = autoPref === '1';
+    } catch (err) {}
 
     loadState();
     populateFilters();
